@@ -56,18 +56,69 @@ def extract_ld_events(html: str) -> list[dict]:
 
 
 def _venue_and_city(loc):
+    """Pull everything schema.org gives us about WHERE the event is.
+
+    Returns (venue, city, lat, lng, address).
+
+    The coordinate and street address were previously discarded. They matter
+    more than anything else here: matching an event to a venue we already know
+    is done on the name, and a name cannot separate "Tipsy Bull, Whitefield"
+    from "Tipsy Bull, Koramangala". A coordinate can, and a postcode can.
+
+    Note the caller must still treat a coordinate as a claim, not a fact —
+    several sites publish the city centre when geocoding fails.
+    """
     if isinstance(loc, list):
         loc = loc[0] if loc else {}
     if not isinstance(loc, dict):
-        return (str(loc) if loc else None), None
+        return (str(loc) if loc else None), None, None, None, None
+
     venue = loc.get("name")
     city = None
+    address = None
+
     addr = loc.get("address")
     if isinstance(addr, dict):
         city = addr.get("addressLocality") or addr.get("addressRegion")
+        # Rebuild the postal address in reading order; the postcode is the part
+        # that actually separates two branches of one chain.
+        parts = [
+            addr.get("streetAddress"),
+            addr.get("addressLocality"),
+            addr.get("addressRegion"),
+            addr.get("postalCode"),
+            addr.get("addressCountry") if isinstance(addr.get("addressCountry"), str) else None,
+        ]
+        address = ", ".join(str(x).strip() for x in parts if x and str(x).strip()) or None
     elif isinstance(addr, str):
         city = addr
-    return venue, city
+        address = addr
+
+    lat = lng = None
+    geo = loc.get("geo")
+    if isinstance(geo, list):
+        geo = geo[0] if geo else None
+    if isinstance(geo, dict):
+        lat = _as_float(geo.get("latitude"))
+        lng = _as_float(geo.get("longitude"))
+
+    return venue, city, lat, lng, address
+
+
+def _as_float(v):
+    """schema.org publishes coordinates as numbers OR as strings. 0,0 is not a
+    place — it is a geocoder that gave up."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f == 0:
+        return None
+    if not (-90 <= f <= 90 or -180 <= f <= 180):
+        return None
+    return f
 
 
 def _price(offers):
@@ -110,7 +161,7 @@ def _performers(perf):
 
 
 def normalise(e: dict, source: str, default_city: str | None) -> Event:
-    venue, city = _venue_and_city(e.get("location"))
+    venue, city, vlat, vlng, vaddr = _venue_and_city(e.get("location"))
     price, cur = _price(e.get("offers"))
     url = e.get("url") or ""
     if isinstance(url, list):
@@ -129,6 +180,9 @@ def normalise(e: dict, source: str, default_city: str | None) -> Event:
         url=url,
         city=city or default_city,
         venue=venue,
+        venue_lat=vlat,
+        venue_lng=vlng,
+        venue_address=vaddr,
         start=e.get("startDate"),
         end=e.get("endDate"),
         date_label=e.get("startDate"),
