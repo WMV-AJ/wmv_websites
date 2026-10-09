@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import time
+from datetime import datetime
 
 from curl_cffi import requests as cr
 
@@ -77,6 +78,28 @@ def enrich_detail(session, card: dict):
         pass
 
 
+_DAY_MONTH_YEAR = re.compile(r'(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})')
+
+
+def _iso_dates(label: str | None) -> tuple[str | None, str | None]:
+    """'24 October 2026' -> ('2026-10-24', None);
+    '24 October 2026 - 26 October 2026' -> ('2026-10-24', '2026-10-26').
+
+    The detail page only shows a human date, and the importer keeps an event
+    only when it can read an ISO date, so without this every Platinumlist
+    event arrived dateless.
+    """
+    out = []
+    for d, mon, y in _DAY_MONTH_YEAR.findall(label or ""):
+        for fmt in ("%d %B %Y", "%d %b %Y"):
+            try:
+                out.append(datetime.strptime(f"{d} {mon} {y}", fmt).date().isoformat())
+                break
+            except ValueError:
+                continue
+    return (out[0] if out else None, out[1] if len(out) > 1 else None)
+
+
 def normalise(card: dict, city: str) -> Event:
     price = card.get("price")
     cur = None
@@ -90,6 +113,8 @@ def normalise(card: dict, city: str) -> Event:
         url=card["url"],
         city=city.title(),
         venue=card.get("venue"),
+        start=_iso_dates(card.get("date"))[0],
+        end=_iso_dates(card.get("date"))[1],
         date_label=card.get("date"),
         price=price,
         currency=cur,
