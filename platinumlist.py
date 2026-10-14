@@ -79,6 +79,7 @@ def enrich_detail(session, card: dict):
 
 
 _DAY_MONTH_YEAR = re.compile(r'(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})')
+_DAY_MONTH = re.compile(r'(\d{1,2})\s+([A-Za-z]{3,9})\b')
 
 
 def _iso_dates(label: str | None) -> tuple[str | None, str | None]:
@@ -97,6 +98,21 @@ def _iso_dates(label: str | None) -> tuple[str | None, str | None]:
                 break
             except ValueError:
                 continue
+    if not out:
+        # "31 Dec" / "6 October" — no year. A date up to ~2 months back is a run
+        # that started recently (left in this year; the importer drops past
+        # dates); further back means it is next year's ("10 Jan" seen in Dec).
+        today = datetime.now().date()
+        for d, mon in _DAY_MONTH.findall(label or ""):
+            for fmt in ("%d %B %Y", "%d %b %Y"):
+                try:
+                    day = datetime.strptime(f"{d} {mon} {today.year}", fmt).date()
+                except ValueError:
+                    continue
+                if (today - day).days > 60:
+                    day = day.replace(year=today.year + 1)
+                out.append(day.isoformat())
+                break
     return (out[0] if out else None, out[1] if len(out) > 1 else None)
 
 
