@@ -17,11 +17,16 @@ import json
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-import requests
+# curl_cffi with a Chrome TLS fingerprint: plain `requests` gets 403 from the
+# events API (bot protection) since at least 2026-10-09; the browser-like
+# fingerprint gets 200. Same Session/get/post/json API.
+from curl_cffi import requests
 
 from schema import Event
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 BASE = "https://sortmyscene.com/events/all-v2"
 EVENT_PAGE = "https://sortmyscene.com/event/"
@@ -75,7 +80,15 @@ def fetch_page(session, city, start_iso, end_iso, page):
         "endDate": end_iso,
         "page": page,
     }
-    r = session.get(BASE, params=params, timeout=30)
+    # The API rate-limits (429) bursts; back off and retry rather than lose
+    # the whole city's scrape.
+    for attempt in range(5):
+        r = session.get(BASE, params=params, timeout=30)
+        if r.status_code != 429:
+            break
+        wait = 20 * (attempt + 1)
+        print(f"  429 on page {page}, waiting {wait}s", file=sys.stderr)
+        time.sleep(wait)
     r.raise_for_status()
     return r.json()
 
@@ -83,9 +96,11 @@ def fetch_page(session, city, start_iso, end_iso, page):
 def normalise(rec: dict) -> Event:
     raw_start = rec.get("rawStartTime")
     raw_end = rec.get("rawEndTime")
-    start_iso = (datetime.fromtimestamp(raw_start / 1000, tz=timezone.utc).isoformat()
+    # India time, not UTC: the importer keeps the date part, and a 1 AM show
+    # stamped in UTC would land on the previous day.
+    start_iso = (datetime.fromtimestamp(raw_start / 1000, tz=IST).isoformat()
                  if isinstance(raw_start, (int, float)) else None)
-    end_iso = (datetime.fromtimestamp(raw_end / 1000, tz=timezone.utc).isoformat()
+    end_iso = (datetime.fromtimestamp(raw_end / 1000, tz=IST).isoformat()
                if isinstance(raw_end, (int, float)) else None)
     slug = rec.get("event_url", "")
     price = rec.get("priceLabel") or (str(rec["l_price"]) if rec.get("l_price") else None)
@@ -141,7 +156,7 @@ def enrich_description(session, ev, delay=0.25):
 
 def scrape(city, start, end, max_pages=50, delay=0.5, enrich=True):
     start_iso, end_iso = _iso(start), _iso(end)
-    session = requests.Session()
+    session = requests.Session(impersonate="chrome124")
     session.headers.update({"User-Agent": UA, "Accept": "application/json"})
 
     events, seen = [], set()

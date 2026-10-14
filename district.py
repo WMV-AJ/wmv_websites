@@ -34,11 +34,18 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# Bengaluru location context (a real Google Place id the site accepts).
+# Location context per city (real Google Place ids the site accepts). Read
+# off the headers District's own web app sends for that city's event pages;
+# pcity_id is not always the same as city_id (Mumbai: 3 vs 20).
 BENGALURU = {
-    "city_id": 4, "city_name": "Bengaluru", "pcity_key": "bengaluru",
+    "city_id": 4, "pcity_id": 4, "city_name": "Bengaluru", "pcity_key": "bengaluru",
     "place_id": "ChIJc_MWwGMUrjsRnYrKXvID-Ic", "lat": 12.9292, "lng": 77.6380,
 }
+MUMBAI = {
+    "city_id": 3, "pcity_id": 20, "city_name": "Mumbai", "pcity_key": "mumbai",
+    "place_id": "ChIJLRxpsh_I5zsR-oxj6sW1ZmM", "lat": 19.1286, "lng": 72.8775,
+}
+LOCATIONS = {"bengaluru": BENGALURU, "bangalore": BENGALURU, "mumbai": MUMBAI}
 CATEGORIES = ["music", "nightlife", "comedy", "sports", "performances", "food-and-drink"]
 GET_BY_SLUG = "https://www.district.in/gw/consumer/events/v1/event/getBySlug/"
 
@@ -64,7 +71,7 @@ def _headers(loc):
         "x-app-type": "ed_web", "x-app-version": "11.11.11",
         "x-city-id": str(loc["city_id"]), "x-city-name": loc["city_name"],
         "x-country-id": "1", "x-guest-token": "1212",
-        "x-pcity-id": str(loc["city_id"]), "x-pcity-key": loc["pcity_key"],
+        "x-pcity-id": str(loc.get("pcity_id", loc["city_id"])), "x-pcity-key": loc["pcity_key"],
         "x-place-id": loc["place_id"], "x-place-type": "GOOGLE_PLACE",
         "x-screen-type": "desktop",
         "x-gps-lat": str(loc["lat"]), "x-gps-lng": str(loc["lng"]),
@@ -160,7 +167,7 @@ def scrape(categories=CATEGORIES, loc=BENGALURU, only_city=None, scrolls=8, head
 
         for cat in categories:
             before = len(events)
-            url = f"https://www.district.in/events/{cat}-in-bengaluru-book-tickets"
+            url = f"https://www.district.in/events/{cat}-in-{loc['pcity_key']}-book-tickets"
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
             except Exception as e:
@@ -207,15 +214,22 @@ def main():
     ap = argparse.ArgumentParser(description="Scrape District (Zomato) events via its discovery API.")
     ap.add_argument("--categories", default=",".join(CATEGORIES),
                     help="comma list: music,nightlife,comedy,sports,performances,food-and-drink")
-    ap.add_argument("--only-city", default="Bengaluru",
-                    help="keep only events whose EventData.city matches (blank = keep all/national)")
-    ap.add_argument("--out", default="district_bengaluru")
+    ap.add_argument("--city", default="Bengaluru",
+                    help=f"which city's event pages to load: {', '.join(sorted(LOCATIONS))}")
+    ap.add_argument("--only-city", default=None,
+                    help="keep only events whose EventData.city matches (default: --city; '' = keep all)")
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
+    loc = LOCATIONS.get(args.city.lower())
+    if not loc:
+        sys.exit(f"Unknown city {args.city!r}. Known: {', '.join(sorted(LOCATIONS))}.")
+    if args.out is None:
+        args.out = f"district_{loc['pcity_key']}"
     cats = [c.strip() for c in args.categories.split(",") if c.strip()]
-    only = args.only_city or None
-    print(f"[district] cats={cats} only_city={only!r}", file=sys.stderr)
-    events = scrape(categories=cats, only_city=only)
+    only = loc["city_name"] if args.only_city is None else (args.only_city or None)
+    print(f"[district] city={loc['city_name']} cats={cats} only_city={only!r}", file=sys.stderr)
+    events = scrape(categories=cats, loc=loc, only_city=only)
     rows = [e.to_dict() for e in events]
     with open(f"{args.out}.json", "w") as f:
         json.dump(rows, f, indent=2, ensure_ascii=False)
